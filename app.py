@@ -52,12 +52,15 @@ def db_init():
                 last_run INTEGER NOT NULL DEFAULT 0
             )
         """)
+        # migrations
         if not _column_exists(con, "mods", "version"):
             con.execute("ALTER TABLE mods ADD COLUMN version TEXT NOT NULL DEFAULT ''")
         if not _column_exists(con, "mods", "category"):
             con.execute("ALTER TABLE mods ADD COLUMN category TEXT NOT NULL DEFAULT ''")
         if not _column_exists(con, "mods", "blend_path"):
             con.execute("ALTER TABLE mods ADD COLUMN blend_path TEXT NOT NULL DEFAULT ''")
+        if not _column_exists(con, "mods", "work_path"):
+            con.execute("ALTER TABLE mods ADD COLUMN work_path TEXT NOT NULL DEFAULT ''")
         con.commit()
 
 def db_fetch_all(name_filter: str | None = None, category_filter: str | None = None):
@@ -83,8 +86,8 @@ def db_distinct_categories():
 def db_insert(mod: dict) -> int:
     with db_connect() as con:
         cur = con.execute("""
-            INSERT INTO mods (name, cover_path, bat_path, status, last_run, version, category, blend_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO mods (name, cover_path, bat_path, status, last_run, version, category, blend_path, work_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             mod.get("name",""),
             mod.get("cover_path",""),
@@ -94,6 +97,7 @@ def db_insert(mod: dict) -> int:
             mod.get("version","").strip(),
             mod.get("category","").strip(),
             mod.get("blend_path","").strip(),
+            mod.get("work_path","").strip(),
         ))
         con.commit()
         return cur.lastrowid
@@ -102,7 +106,7 @@ def db_update(mod_id: int, mod: dict):
     with db_connect() as con:
         con.execute("""
             UPDATE mods
-               SET name = ?, cover_path = ?, bat_path = ?, status = ?, last_run = ?, version = ?, category = ?, blend_path = ?
+               SET name = ?, cover_path = ?, bat_path = ?, status = ?, last_run = ?, version = ?, category = ?, blend_path = ?, work_path = ?
              WHERE id = ?
         """, (
             mod.get("name",""),
@@ -113,6 +117,7 @@ def db_update(mod_id: int, mod: dict):
             mod.get("version","").strip(),
             mod.get("category","").strip(),
             mod.get("blend_path","").strip(),
+            mod.get("work_path","").strip(),
             mod_id
         ))
         con.commit()
@@ -160,12 +165,12 @@ class ModEditorDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("Mod Settings")
         self.setModal(True)
-        self.setMinimumWidth(700)
+        self.setMinimumWidth(720)
 
         existing_categories = existing_categories or []
-
         self.mod = mod or {
-            "name":"", "version":"", "category":"", "cover_path":"", "bat_path":"", "blend_path":"", "status":"Ready", "last_run":0
+            "name":"", "version":"", "category":"", "cover_path":"", "bat_path":"",
+            "blend_path":"", "work_path":"", "status":"Ready", "last_run":0
         }
 
         form = QtWidgets.QFormLayout()
@@ -184,14 +189,17 @@ class ModEditorDialog(QtWidgets.QDialog):
         self.cover_edit = QtWidgets.QLineEdit(self.mod.get("cover_path",""))
         self.bat_edit   = QtWidgets.QLineEdit(self.mod.get("bat_path",""))
         self.blend_edit = QtWidgets.QLineEdit(self.mod.get("blend_path",""))
+        self.work_edit  = QtWidgets.QLineEdit(self.mod.get("work_path",""))
 
         pick_cover = QtWidgets.QPushButton("Browse…"); pick_cover.clicked.connect(self.pick_cover)
         pick_bat   = QtWidgets.QPushButton("Browse…"); pick_bat.clicked.connect(self.pick_bat)
         pick_blend = QtWidgets.QPushButton("Browse…"); pick_blend.clicked.connect(self.pick_blend)
+        pick_work  = QtWidgets.QPushButton("Browse…"); pick_work.clicked.connect(self.pick_work)
 
         cover_row = QtWidgets.QHBoxLayout(); cover_row.addWidget(self.cover_edit); cover_row.addWidget(pick_cover)
         bat_row   = QtWidgets.QHBoxLayout();   bat_row.addWidget(self.bat_edit);   bat_row.addWidget(pick_bat)
         blend_row = QtWidgets.QHBoxLayout(); blend_row.addWidget(self.blend_edit); blend_row.addWidget(pick_blend)
+        work_row  = QtWidgets.QHBoxLayout();  work_row.addWidget(self.work_edit);  work_row.addWidget(pick_work)
 
         form.addRow("Mod Name:", self.name_edit)
         form.addRow("Version:", self.version_edit)
@@ -199,6 +207,7 @@ class ModEditorDialog(QtWidgets.QDialog):
         form.addRow("Cover Image:", cover_row)
         form.addRow("BAT/CMD File:", bat_row)
         form.addRow("Blend File (.blend):", blend_row)
+        form.addRow("Project Folder (optional):", work_row)
 
         btns = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Save |
@@ -227,6 +236,12 @@ class ModEditorDialog(QtWidgets.QDialog):
         )
         if path: self.blend_edit.setText(path)
 
+    def pick_work(self):
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select Project Folder", "", QtWidgets.QFileDialog.Option.ShowDirsOnly
+        )
+        if path: self.work_edit.setText(path)
+
     def get_value(self):
         return {
             "name": self.name_edit.text().strip(),
@@ -235,6 +250,7 @@ class ModEditorDialog(QtWidgets.QDialog):
             "cover_path": self.cover_edit.text().strip(),
             "bat_path": self.bat_edit.text().strip(),
             "blend_path": self.blend_edit.text().strip(),
+            "work_path": self.work_edit.text().strip(),
             "status": self.mod.get("status","Ready"),
             "last_run": self.mod.get("last_run", 0)
         }
@@ -255,11 +271,21 @@ class MainWindow(QtWidgets.QMainWindow):
         del_act = QtGui.QAction("Delete", self); del_act.triggered.connect(self.delete_selected)
         run_act = QtGui.QAction("Run ▶", self); run_act.triggered.connect(self.run_selected)
         blend_act = QtGui.QAction("Open Blend ⧉", self); blend_act.triggered.connect(self.open_blend_selected)
-        open_dir_act = QtGui.QAction("Open Data Folder", self); open_dir_act.triggered.connect(lambda: os.startfile(str(APP_DIR)))
 
+        # ---- Base Folder button (left-click open, right-click set) ----
+        self.base_folder_action = QtGui.QAction("Base Folder", self)
+        self.base_folder_action.triggered.connect(self.open_base_folder)
+
+        self.base_folder_button = QtWidgets.QToolButton()
+        self.base_folder_button.setDefaultAction(self.base_folder_action)
+        self.base_folder_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.base_folder_button.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.base_folder_button.customContextMenuRequested.connect(self._show_base_folder_menu)
+
+        # Build toolbar
         tb.addAction(add_act); tb.addAction(edit_act); tb.addAction(del_act)
         tb.addSeparator(); tb.addAction(run_act); tb.addAction(blend_act)
-        tb.addSeparator(); tb.addAction(open_dir_act); tb.addSeparator()
+        tb.addSeparator(); tb.addWidget(self.base_folder_button); tb.addSeparator()
 
         # Category filter
         tb.addWidget(QtWidgets.QLabel("  Category: "))
@@ -267,7 +293,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.category_filter.setMinimumWidth(180)
         self.category_filter.currentIndexChanged.connect(self.refresh)
         tb.addWidget(self.category_filter)
-
         tb.addWidget(toolbar_spacer(8))
 
         # Name filter
@@ -279,7 +304,7 @@ class MainWindow(QtWidgets.QMainWindow):
         tb.addWidget(self.search_edit)
 
         # Table and sizes
-        self.BANNER_W, self.BANNER_H = 321, 150  # keep your banner size
+        self.BANNER_W, self.BANNER_H = 321, 150  # cover size
         self.table = QtWidgets.QTableWidget(0, 8, self)
         self.table.setHorizontalHeaderLabels(["ID", "Cover", "MOD NAME", "Version", "Category", "Last Run", "Path", "Blend Path"])
         self.table.verticalHeader().setVisible(False)
@@ -290,24 +315,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.table.verticalHeader().setDefaultSectionSize(self.BANNER_H + 18)
         self.setCentralWidget(self.table)
 
-        # Fonts: make name bigger; others stay default (14px from QSS)
+        # Fonts: name bigger; others default via QSS
         self.name_font = QtGui.QFont(self.font())
         self.name_font.setPointSize(self.font().pointSize() + 4)
 
-        # Column sizing rules
+        # Column sizing
         hdr = self.table.horizontalHeader()
         hdr.setStretchLastSection(True)
-
-        hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)  # ID (tiny)
-        hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Fixed)             # Cover fixed width
+        hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)  # ID small
+        hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Fixed)             # Cover fixed
         hdr.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)           # Name stretches
         hdr.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Interactive)       # Version
         hdr.setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.Interactive)       # Category
         hdr.setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeMode.Interactive)       # Last Run
         hdr.setSectionResizeMode(6, QtWidgets.QHeaderView.ResizeMode.Interactive)       # Path
         hdr.setSectionResizeMode(7, QtWidgets.QHeaderView.ResizeMode.Interactive)       # Blend Path
-
-        self.table.setColumnWidth(1, self.BANNER_W + 4)  # cover column
+        self.table.setColumnWidth(1, self.BANNER_W + 4)
         self.table.setColumnWidth(3, 120)
         self.table.setColumnWidth(4, 160)
         self.table.setColumnWidth(5, 200)
@@ -318,12 +341,55 @@ class MainWindow(QtWidgets.QMainWindow):
         self.table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.context_menu)
 
-        # Double click still runs
+        # Double click runs
         self.table.doubleClicked.connect(self.run_selected)
 
+        # Rows cache
         self.rows = []
+
+        # Initialize category, data, and base folder tooltip
         self.refresh_categories()
         self.refresh()
+        self._set_base_folder(str(self._get_base_folder()))
+
+    # ----- Base folder: settings + actions -----
+    def _settings(self) -> QtCore.QSettings:
+        return QtCore.QSettings("B4RT", "ModLauncher")
+
+    def _get_base_folder(self) -> Path:
+        val = self._settings().value("base_folder", str(APP_DIR))
+        return Path(val)
+
+    def _set_base_folder(self, path: str):
+        self._settings().setValue("base_folder", path or "")
+        self.base_folder_action.setToolTip(f"Open Base Folder\n{path or '(not set)'}")
+
+    def open_base_folder(self):
+        p = self._get_base_folder()
+        if not p.exists():
+            QtWidgets.QMessageBox.information(
+                self, "Base Folder",
+                "Base folder is not set or does not exist.\nRight‑click this button to set it."
+            )
+            return
+        try:
+            self._open_path_with_os(p)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to open base folder:\n{e}")
+
+    def choose_base_folder(self):
+        start = str(self._get_base_folder())
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select B4RT BASE FOLDER", start, QtWidgets.QFileDialog.Option.ShowDirsOnly
+        )
+        if path:
+            self._set_base_folder(path)
+
+    def _show_base_folder_menu(self, pos: QtCore.QPoint):
+        menu = QtWidgets.QMenu(self)
+        menu.addAction("Set Base Folder…", self.choose_base_folder)
+        btn = self.base_folder_button
+        menu.exec(btn.mapToGlobal(pos))
 
     # ----- helpers -----
     def refresh_categories(self):
@@ -343,6 +409,7 @@ class MainWindow(QtWidgets.QMainWindow):
         menu = QtWidgets.QMenu(self)
         menu.addAction("Run ▶", self.run_selected)
         menu.addAction("Open Blend ⧉", self.open_blend_selected)
+        menu.addAction("Open Project Folder", self.open_project_folder_selected)
         menu.addSeparator()
         menu.addAction("Edit", self.edit_selected)
         menu.addAction("Delete", self.delete_selected)
@@ -379,6 +446,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "cover_path": row["cover_path"],
             "bat_path": row["bat_path"],
             "blend_path": row["blend_path"] if "blend_path" in row.keys() else "",
+            "work_path": row["work_path"] if "work_path" in row.keys() else "",
             "status": row["status"],
             "last_run": row["last_run"]
         }
@@ -414,6 +482,15 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to run:\n{e}")
 
+    # ----- open helpers -----
+    def _open_path_with_os(self, p: Path):
+        if sys.platform.startswith("win"):
+            os.startfile(str(p))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(p)])
+        else:
+            subprocess.Popen(["xdg-open", str(p)])
+
     def open_blend_selected(self):
         idx = self.current_row_index()
         if idx < 0: return
@@ -427,14 +504,26 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Not found", f"Blend file not found:\n{blend_path}")
             return
         try:
-            if sys.platform.startswith("win"):
-                os.startfile(str(p))
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(p)])
-            else:
-                subprocess.Popen(["xdg-open", str(p)])
+            self._open_path_with_os(p)
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to open blend file:\n{e}")
+
+    def open_project_folder_selected(self):
+        idx = self.current_row_index()
+        if idx < 0: return
+        row = self.rows[idx]
+        work_path = (row["work_path"] if "work_path" in row.keys() else "").strip()
+        if not work_path:
+            QtWidgets.QMessageBox.information(self, "No Project Folder", "No project/work folder set. Use Edit to set one.")
+            return
+        p = Path(work_path)
+        if not p.exists():
+            QtWidgets.QMessageBox.warning(self, "Not found", f"Project folder not found:\n{work_path}")
+            return
+        try:
+            self._open_path_with_os(p)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to open project folder:\n{e}")
 
     # ----- table population -----
     def refresh(self, *_args, select_name=None):
@@ -451,11 +540,11 @@ class MainWindow(QtWidgets.QMainWindow):
             id_item = QtWidgets.QTableWidgetItem(str(r["id"]))
             self.table.setItem(i, 0, id_item)
 
-            # COVER (widget)
+            # Cover widget
             cover_widget = CoverCell(r["cover_path"], self.BANNER_W, self.BANNER_H, self.table)
             self.table.setCellWidget(i, 1, cover_widget)
 
-            # NAME (bigger font, text only)
+            # Name (bigger font)
             name_item = QtWidgets.QTableWidgetItem(r["name"])
             name_item.setFont(self.name_font)
             self.table.setItem(i, 2, name_item)
@@ -473,7 +562,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # Path (BAT/CMD)
             self.table.setItem(i, 6, QtWidgets.QTableWidgetItem(r["bat_path"] or ""))
 
-            # Blend Path
+            # Blend Path (visible like before; hide if you prefer)
             blend_val = r["blend_path"] if "blend_path" in r.keys() else ""
             self.table.setItem(i, 7, QtWidgets.QTableWidgetItem(blend_val))
 
