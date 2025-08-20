@@ -3,8 +3,27 @@ from pathlib import Path
 from PyQt6 import QtWidgets, QtGui, QtCore
 
 APP_TITLE = "B4RT Mod Launcher"
-APP_DIR = Path(__file__).resolve().parent
-DB_FILE = APP_DIR / "mods.db"
+
+# ========= Portable paths (next to EXE/SCRIPT) =========
+def _app_dir() -> Path:
+    # folder of executable when frozen, else script folder
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+APP_DIR  = _app_dir()
+DATA_DIR = (APP_DIR / "data")
+DB_FILE  = DATA_DIR / "mods.db"
+SETTINGS_FILE = DATA_DIR / "settings.ini"
+
+def ensure_portable_paths():
+    """Make sure data dir exists and DB file is creatable, show clear error if not."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        if not DB_FILE.exists():
+            DB_FILE.touch()
+    except Exception as e:
+        raise RuntimeError(f"Failed to create data folder or DB file.\n\n{DB_FILE}\n\n{e}")
 
 # ------------------ Inline QSS ------------------
 INLINE_QSS = """
@@ -143,7 +162,6 @@ def human_time(ts: int | float):
 def load_styles(app: QtWidgets.QApplication):
     QtWidgets.QApplication.setStyle("Fusion")
     app.setStyleSheet(INLINE_QSS)
-    print("[QSS] Using inline stylesheet.")
 
 # ---------- Cover cell widget (image only) ----------
 class CoverCell(QtWidgets.QLabel):
@@ -352,9 +370,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh()
         self._set_base_folder(str(self._get_base_folder()))
 
-    # ----- Base folder: settings + actions -----
+    # ----- Base folder: portable QSettings via INI in data/ -----
     def _settings(self) -> QtCore.QSettings:
-        return QtCore.QSettings("B4RT", "ModLauncher")
+        return QtCore.QSettings(str(SETTINGS_FILE), QtCore.QSettings.Format.IniFormat)
 
     def _get_base_folder(self) -> Path:
         val = self._settings().value("base_folder", str(APP_DIR))
@@ -537,8 +555,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.table.insertRow(i)
 
             # ID
-            id_item = QtWidgets.QTableWidgetItem(str(r["id"]))
-            self.table.setItem(i, 0, id_item)
+            self.table.setItem(i, 0, QtWidgets.QTableWidgetItem(str(r["id"])))
 
             # Cover widget
             cover_widget = CoverCell(r["cover_path"], self.BANNER_W, self.BANNER_H, self.table)
@@ -546,7 +563,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
             # Name (bigger font)
             name_item = QtWidgets.QTableWidgetItem(r["name"])
-            name_item.setFont(self.name_font)
+            name_font = QtGui.QFont(self.font()); name_font.setPointSize(self.font().pointSize() + 4)
+            name_item.setFont(name_font)
             self.table.setItem(i, 2, name_item)
 
             # Version
@@ -562,7 +580,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # Path (BAT/CMD)
             self.table.setItem(i, 6, QtWidgets.QTableWidgetItem(r["bat_path"] or ""))
 
-            # Blend Path (visible like before; hide if you prefer)
+            # Blend Path
             blend_val = r["blend_path"] if "blend_path" in r.keys() else ""
             self.table.setItem(i, 7, QtWidgets.QTableWidgetItem(blend_val))
 
@@ -575,7 +593,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
 # ====================== ENTRY ======================
 def main():
-    print(f"[DB] Using: {DB_FILE}")
+    # show paths in console (useful when testing exe via terminal)
+    print(f"[DATA] Portable data dir: {DATA_DIR}")
+    print(f"[DB]   Using database:   {DB_FILE}")
+
+    # ensure data dir + db exist (with clear error dialog if not)
+    try:
+        ensure_portable_paths()
+    except Exception as e:
+        app = QtWidgets.QApplication(sys.argv)
+        QtWidgets.QMessageBox.critical(None, "Startup Error", str(e))
+        sys.exit(1)
+
     db_init()
 
     app = QtWidgets.QApplication(sys.argv)
